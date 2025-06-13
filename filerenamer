@@ -1,0 +1,2 @@
+#!/bin/bash
+python3 /mnt/c/q/arc/projects/filerenamer/filerenamer.py "$@"
