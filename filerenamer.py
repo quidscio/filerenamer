@@ -13,17 +13,32 @@ from pathlib import Path
 # Character replacement mapping
 CHAR_MAP = {
     ':': '_',
+    '：': '_',  # Fullwidth colon (U+FF1A)
     ',': '-',
+    '，': '-',  # Fullwidth comma
     ' ': '-',
+    '　': '-',  # Fullwidth space
     ';': '_',
+    '；': '_',  # Fullwidth semicolon
     '?': '_',
+    '？': '_',  # Fullwidth question mark
     '<': '_',
+    '＜': '_',  # Fullwidth less-than
     '>': '_',
+    '＞': '_',  # Fullwidth greater-than
     '|': '_',
+    '｜': '_',  # Fullwidth vertical bar
     '"': '_',
+    '"': '_',  # Left double quotation mark
+    '"': '_',  # Right double quotation mark
+    ''': '_',  # Left single quotation mark
+    ''': '_',  # Right single quotation mark (apostrophe)
     '*': '_',
+    '＊': '_',  # Fullwidth asterisk
     '/': '_',
-    '\\': '_'
+    '／': '_',  # Fullwidth slash
+    '\\': '_',
+    '＼': '_'  # Fullwidth backslash
 }
 
 def sanitize_filename(filename):
@@ -39,7 +54,7 @@ def sanitize_filename(filename):
     
     return filename
 
-def rename_files(path, recursive=False, dry_run=False, verbose=True):
+def rename_files(path, recursive=False, dry_run=True, verbose=True):
     """
     Rename files in the specified path.
     
@@ -86,6 +101,12 @@ def rename_files(path, recursive=False, dry_run=False, verbose=True):
                     files_renamed += 1
                 except Exception as e:
                     print(f"  Error renaming '{old_name}': {e}")
+            else:
+                # In dry-run mode, count the file unless target exists
+                if not new_path.exists():
+                    files_renamed += 1
+                elif verbose:
+                    print(f"  Warning: '{new_name}' already exists. Would skip.")
     
     if verbose:
         if dry_run:
@@ -113,11 +134,11 @@ Character replacements:
   \\ -> _
 
 Examples:
-  %(prog)s .                    # Rename files in current directory
-  %(prog)s /path/to/dir         # Rename files in specific directory
-  %(prog)s -r /path/to/dir      # Rename files recursively
-  %(prog)s -d .                 # Dry run to see what would be renamed
-  %(prog)s -r -d /path/to/dir   # Recursive dry run
+  %(prog)s .                    # Dry-run: show what would be renamed
+  %(prog)s -w .                 # Actually rename files in current directory
+  %(prog)s /path/to/dir         # Dry-run in specific directory
+  %(prog)s -w -r /path/to/dir   # Recursively rename files (wet run)
+  %(prog)s -r /path/to/dir      # Recursive dry-run
         """
     )
     
@@ -125,8 +146,8 @@ Examples:
                         help='Path to directory or file (default: current directory)')
     parser.add_argument('-r', '--recursive', action='store_true',
                         help='Process subdirectories recursively')
-    parser.add_argument('-d', '--dry-run', action='store_true',
-                        help='Show what would be renamed without actually renaming')
+    parser.add_argument('-w', '--wet', action='store_true',
+                        help='Actually rename files (default is dry-run)')
     parser.add_argument('-q', '--quiet', action='store_true',
                         help='Suppress output except errors')
     
@@ -135,7 +156,7 @@ Examples:
     rename_files(
         path=args.path,
         recursive=args.recursive,
-        dry_run=args.dry_run,
+        dry_run=not args.wet,
         verbose=not args.quiet
     )
 
