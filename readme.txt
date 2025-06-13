@@ -1,4 +1,6 @@
 06-13-25 
+* SEE MD FILE * 
+
 * Eliminates spaces and unfriendly charaters from filename 
 ** Python file: does the work 
 ** Bat file: put this in the path and hardcode the path to the python file 
