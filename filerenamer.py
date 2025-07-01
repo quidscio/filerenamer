@@ -54,7 +54,33 @@ def sanitize_filename(filename):
     
     return filename
 
-def rename_files(path, recursive=False, dry_run=True, verbose=True):
+def get_alternative_filename(path, base_name):
+    """Generate alternative filename if conflict exists."""
+    counter = 1
+    name_parts = base_name.rsplit('.', 1)
+    
+    if len(name_parts) == 2:
+        name, ext = name_parts
+        while (path.parent / f"{name}_{counter}.{ext}").exists():
+            counter += 1
+        return f"{name}_{counter}.{ext}"
+    else:
+        while (path.parent / f"{base_name}_{counter}").exists():
+            counter += 1
+        return f"{base_name}_{counter}"
+
+def get_user_confirmation(prompt):
+    """Get Y/n confirmation from user."""
+    while True:
+        response = input(f"{prompt} (Y/n): ").strip().lower()
+        if response in ['', 'y', 'yes']:
+            return True
+        elif response in ['n', 'no']:
+            return False
+        else:
+            print("Please enter Y/y/yes or N/n/no (or press Enter for Yes)")
+
+def rename_files(path, recursive=False, dry_run=True, verbose=True, first_call=True):
     """
     Rename files in the specified path.
     
@@ -63,6 +89,7 @@ def rename_files(path, recursive=False, dry_run=True, verbose=True):
         recursive: Process subdirectories recursively
         dry_run: Show what would be renamed without actually renaming
         verbose: Print detailed output
+        first_call: Whether this is the first call (for "== " prefix)
     """
     path = Path(path)
     
@@ -71,6 +98,7 @@ def rename_files(path, recursive=False, dry_run=True, verbose=True):
         return
     
     files_renamed = 0
+    first_output = True
     
     # Get files to process
     if path.is_file():
@@ -88,12 +116,23 @@ def rename_files(path, recursive=False, dry_run=True, verbose=True):
             new_path = file_path.parent / new_name
             
             if verbose:
-                print(f"{'[DRY RUN] ' if dry_run else ''}Renaming: {old_name} -> {new_name}")
+                prefix = "== " if first_call and first_output else ""
+                first_output = False
+                print(f"{prefix}{'[DRY RUN] ' if dry_run else ''}Renaming: {old_name} -> {new_name}")
             
             if not dry_run:
                 # Check if target already exists
                 if new_path.exists():
-                    print(f"  Warning: '{new_name}' already exists. Skipping.")
+                    print(f"  Warning: '{new_name}' already exists.")
+                    alternative_name = get_alternative_filename(file_path, new_name)
+                    if get_user_confirmation(f"Try alternative name '{alternative_name}'?"):
+                        try:
+                            alternative_path = file_path.parent / alternative_name
+                            file_path.rename(alternative_path)
+                            files_renamed += 1
+                            print(f"  Successfully renamed to: {alternative_name}")
+                        except Exception as e:
+                            print(f"  Error with alternative name: {e}")
                     continue
                 
                 try:
@@ -101,18 +140,39 @@ def rename_files(path, recursive=False, dry_run=True, verbose=True):
                     files_renamed += 1
                 except Exception as e:
                     print(f"  Error renaming '{old_name}': {e}")
+                    
+                    # If it's a file exists error, offer alternative naming
+                    if "exists" in str(e).lower() or "cannot create" in str(e).lower():
+                        alternative_name = get_alternative_filename(file_path, new_name)
+                        if get_user_confirmation(f"Try alternative name '{alternative_name}'?"):
+                            try:
+                                alternative_path = file_path.parent / alternative_name
+                                file_path.rename(alternative_path)
+                                files_renamed += 1
+                                print(f"  Successfully renamed to: {alternative_name}")
+                            except Exception as e2:
+                                print(f"  Error with alternative name: {e2}")
             else:
                 # In dry-run mode, count the file unless target exists
                 if not new_path.exists():
                     files_renamed += 1
                 elif verbose:
                     print(f"  Warning: '{new_name}' already exists. Would skip.")
+                    # Suggest alternative filename in dry-run mode
+                    alternative_name = get_alternative_filename(file_path, new_name)
+                    print(f"  Alternative name would be: '{alternative_name}'")
+                    # Count this as a file that could be renamed (with alternative name)
+                    files_renamed += 1
     
     if verbose:
         if dry_run:
-            print(f"\nDry run complete. {files_renamed} files would be renamed.")
+            print(f"Dry run complete. {files_renamed} files would be renamed.")
+            if files_renamed > 0:
+                if get_user_confirmation("Proceed with renaming these files?"):
+                    # Recursively call with wet run
+                    rename_files(path, recursive, dry_run=False, verbose=verbose, first_call=False)
         else:
-            print(f"\nComplete. {files_renamed} files renamed.")
+            print(f"Complete. {files_renamed} files renamed.")
 
 def main():
     parser = argparse.ArgumentParser(
