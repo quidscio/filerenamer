@@ -71,14 +71,24 @@ def get_alternative_filename(path, base_name):
 
 def get_user_confirmation(prompt):
     """Get Y/n confirmation from user."""
-    while True:
-        response = input(f"{prompt} (Y/n): ").strip().lower()
+    import sys
+    
+    # Always display the prompt message first
+    print(f"{prompt} (Y/n): ", end='', flush=True)
+    
+    try:
+        response = input().strip().lower()
         if response in ['', 'y', 'yes']:
             return True
         elif response in ['n', 'no']:
             return False
         else:
             print("Please enter Y/y/yes or N/n/no (or press Enter for Yes)")
+            return get_user_confirmation(prompt)
+    except (EOFError, KeyboardInterrupt):
+        # In batch/drag-drop context, auto-confirm
+        print("Y")
+        return True
 
 def rename_files(path, recursive=False, dry_run=True, verbose=True, first_call=True):
     """
