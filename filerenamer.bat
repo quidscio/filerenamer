@@ -1,17 +1,23 @@
 @echo off
-REM Try common Python installation paths
-"%USERPROFILE%\anaconda3\python.exe" "C:\q\arc\projects\filerenamer\filerenamer.py" %* 2>nul && goto :success
-"%USERPROFILE%\miniconda3\python.exe" "C:\q\arc\projects\filerenamer\filerenamer.py" %* 2>nul && goto :success
-"C:\ProgramData\anaconda3\python.exe" "C:\q\arc\projects\filerenamer\filerenamer.py" %* 2>nul && goto :success
-"C:\Users\%USERNAME%\AppData\Local\Programs\Python\Python312\python.exe" "C:\q\arc\projects\filerenamer\filerenamer.py" %* 2>nul && goto :success
-py "C:\q\arc\projects\filerenamer\filerenamer.py" %* 2>nul && goto :success
+setlocal
+REM Select Python 3 before running the app so an app error never reruns renames.
+py -3 -c "import sys; sys.exit(sys.version_info < (3, 9))" >nul 2>&1
+if not errorlevel 1 goto :py
+python -c "import sys; sys.exit(sys.version_info < (3, 9))" >nul 2>&1
+if not errorlevel 1 goto :python
+python3 -c "import sys; sys.exit(sys.version_info < (3, 9))" >nul 2>&1
+if not errorlevel 1 goto :python3
+echo ERROR: Python 3.9 or newer is required. Install Python and add it to PATH. 1>&2
+exit /b 1
 
-echo ERROR: Python not found in common locations.
-echo Please update the batch file with your Python path.
-echo.
-echo Your Python is likely at one of these locations:
-where python 2>nul
-echo.
+:py
+py -3 "%~dp0filerenamer.py" %*
+exit /b %errorlevel%
 
-:success
-pause
+:python
+python "%~dp0filerenamer.py" %*
+exit /b %errorlevel%
+
+:python3
+python3 "%~dp0filerenamer.py" %*
+exit /b %errorlevel%

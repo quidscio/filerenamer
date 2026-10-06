@@ -9,17 +9,24 @@ This is a cross-platform Python file renaming utility that sanitizes filenames b
 - `filerenamer.py` - Main Python script with character mapping and file processing logic
 - `filerenamer.bat` - Windows batch wrapper for easy command-line access
 - `filerenamer` - Linux/WSL shell wrapper for easy command-line access
+- `pyproject.toml` - Pure Python wheel and installed CLI configuration
+- `build.py` - Runs tests before building the wheel
+- `build_stamp.py` / `setup.py` - Embed local host build time in source/wheel builds
+- `tests/` - Standard-library unit, CLI, and native launcher tests
 
 ## Usage
 
-The script operates in dry-run mode by default for safety:
+The script proposes renames and asks for confirmation by default:
 
 ```bash
-# Dry-run (shows what would be renamed)
+# Propose names, then confirm with Enter, y, or Y (anything else cancels)
 python filerenamer.py
 python filerenamer.py /path/to/directory
 
-# Actually rename files (requires -w flag)
+# Preview only, without prompting
+python filerenamer.py --dry-run /path/to/directory
+
+# Rename immediately without confirmation
 python filerenamer.py -w
 python filerenamer.py -w /path/to/directory
 
@@ -28,6 +35,14 @@ python filerenamer.py -r -w /path/to/directory
 
 # Quiet mode (errors only)
 python filerenamer.py -q -w
+
+# CamelCase and wildcard patterns (quote for consistent shell behavior)
+python filerenamer.py --camelcase "*.txt"
+python filerenamer.py -w --camelcase "*.txt" "*.pdf"
+
+# Full usage information
+python filerenamer.py --help
+python filerenamer.py --version  # Local build time: yyyy-mm-dd_hh-mm-ss (24-hour)
 ```
 
 ## Architecture
@@ -40,11 +55,17 @@ python filerenamer.py -q -w
 
 ### Key Features
 
-- Dry-run by default (must use `-w` flag to actually rename)
+- Propose and confirm by default; only Enter, y, or Y accepts
+- Use `-w` to rename immediately or `-n`/`--dry-run` for a noninteractive preview
 - Handles both ASCII and Unicode problematic characters
 - Recursive directory processing with `-r` flag
-- Duplicate filename detection and skipping
+- Duplicate filename detection and skipping (errors return status 1)
 - Cross-platform compatibility (Windows/WSL/Linux)
+- Multiple files/directories and Python-expanded wildcard patterns
+- CamelCase mode preserves Unicode letters, existing capitals, and extensions
+- Explicit dry-run never prompts or writes; conflicts never prompt for alternative names
+- Quiet mode never prompts and requires `-w` to write
+- EOF and Ctrl+C at confirmation cancel; confirmed runs use the exact previewed proposals
 
 ### Character Replacement Strategy
 
@@ -58,10 +79,29 @@ Consecutive dashes or underscores are consolidated to single characters.
 
 ## Dependencies
 
-None - uses only Python 3 standard library modules (`os`, `sys`, `argparse`, `pathlib`).
+Python 3.9+; no runtime or test dependencies outside the standard library.
+Building needs pip, setuptools, and wheel.
 
 ## Installation
 
-The project includes wrapper scripts for easy system-wide access:
-- Windows: Place `filerenamer.bat` in PATH, update hardcoded Python script path
-- WSL/Linux: Place `filerenamer` shell script in PATH, update hardcoded Python script path
+Install with `python -m pip install .` to create a platform-native `filerenamer`
+command. For checkout-based use, keep each wrapper beside `filerenamer.py` and
+add that directory to PATH; there are no hardcoded installation paths.
+
+## Validation and Build
+
+Use `python3` in WSL/Linux, or `py -3` in Windows CMD:
+
+```bash
+python3 -m unittest discover -s tests -v
+python3 build.py
+```
+
+`build.py` stops on test failures, then builds `dist/filerenamer-1.0.0-py3-none-any.whl`.
+It stamps `filerenamer.py` with the current local host time before running tests
+and passes that timestamp to the wheel build. Direct pip source builds stamp
+the packaged module through `setup.py`. `--version` prints only the embedded
+build timestamp; never compute it from the clock or file mtime at runtime.
+Use `--no-build-isolation` for offline builds with setuptools/wheel preinstalled.
+GitHub Actions runs the build on Linux, Windows, and macOS with Python 3.9 and
+3.14, then installs and smoke-tests the wheel outside the repository.

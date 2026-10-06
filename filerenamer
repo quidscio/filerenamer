@@ -1,2 +1,4 @@
-#!/bin/bash
-python3 /mnt/c/q/arc/projects/filerenamer/filerenamer.py "$@"
+#!/bin/sh
+# Resolve the script relative to this launcher, independent of the working directory.
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 1
+exec python3 "$script_dir/filerenamer.py" "$@"

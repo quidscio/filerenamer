@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "filerenamer"
+version = "1.0.0"
+description = "Preview and rename files with Windows-friendly or CamelCase names"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.scripts]
+filerenamer = "filerenamer:main"
+
+[tool.setuptools]
+py-modules = ["filerenamer"]

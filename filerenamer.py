@@ -1,234 +1,240 @@
 #!/usr/bin/env python3
-"""
-File Renamer Script
-Replaces problematic characters in filenames with safe alternatives.
-Works on both Windows and WSL/Linux.
-"""
+"""Propose portable filenames and confirm before renaming, unless --wet is supplied."""
 
-import os
-import sys
 import argparse
+import glob
+import os
 from pathlib import Path
+import re
+import sys
+import unicodedata
 
-# Character replacement mapping
-CHAR_MAP = {
-    ':': '_',
-    '：': '_',  # Fullwidth colon (U+FF1A)
-    ',': '-',
-    '，': '-',  # Fullwidth comma
-    ' ': '-',
-    '　': '-',  # Fullwidth space
-    ';': '_',
-    '；': '_',  # Fullwidth semicolon
-    '?': '_',
-    '？': '_',  # Fullwidth question mark
-    '<': '_',
-    '＜': '_',  # Fullwidth less-than
-    '>': '_',
-    '＞': '_',  # Fullwidth greater-than
-    '|': '_',
-    '｜': '_',  # Fullwidth vertical bar
-    '"': '_',
-    '"': '_',  # Left double quotation mark
-    '"': '_',  # Right double quotation mark
-    ''': '_',  # Left single quotation mark
-    ''': '_',  # Right single quotation mark (apostrophe)
-    '*': '_',
-    '＊': '_',  # Fullwidth asterisk
-    '/': '_',
-    '／': '_',  # Fullwidth slash
-    '\\': '_',
-    '＼': '_'  # Fullwidth backslash
+
+# Updated by build.py; package builds stamp their own copy using the host clock.
+BUILD_TIME = "2026-10-05_23-36-00"
+
+
+CHAR_MAP = dict.fromkeys(':：;；?？<＜>＞|｜"“”\'‘’*＊/／\\＼', '_')
+CHAR_MAP.update(dict.fromkeys(',， \u3000', '-'))
+WINDOWS_RESERVED_NAMES = {'CON', 'PRN', 'AUX', 'NUL'} | {
+    prefix + number for prefix in ('COM', 'LPT') for number in '123456789¹²³'
 }
 
-def sanitize_filename(filename):
-    """Replace problematic characters in filename according to CHAR_MAP."""
-    for old_char, new_char in CHAR_MAP.items():
-        filename = filename.replace(old_char, new_char)
-    
-    # Remove multiple consecutive dashes or underscores
-    while '--' in filename:
-        filename = filename.replace('--', '-')
-    while '__' in filename:
-        filename = filename.replace('__', '_')
-    
+
+def _is_word_character(character):
+    # Keep Unicode letters, numbers and combining marks (including accents).
+    return unicodedata.category(character)[0] in 'LNM'
+
+
+def _camelcase(filename):
+    filename = filename.rstrip(' .')
+    hidden = filename.startswith('.')
+    filename = filename.lstrip('.')
+    # Keep extension chains such as .tar.gz, including their original case.
+    stem, _, extension = filename.partition('.')
+    words = ''.join(c if _is_word_character(c) else ' ' for c in stem).split()
+    stem = ''.join(word[:1].upper() + word[1:] for word in words) or 'File'
+    extension = '.'.join(
+        cleaned for part in extension.split('.')
+        if (cleaned := ''.join(c for c in part if _is_word_character(c)))
+    )
+    if stem.upper() in WINDOWS_RESERVED_NAMES:
+        stem += 'File'
+    return ('.' if hidden else '') + stem + ('.' + extension if extension else '')
+
+
+def sanitize_filename(filename, camelcase=False):
+    """Sanitize a basename, preserving extensions and avoiding Windows devices."""
+    if camelcase:
+        return _camelcase(filename)
+    filename = ''.join(
+        '_' if ord(c) < 32 else CHAR_MAP.get(c, '-' if c.isspace() else c)
+        for c in filename
+    )
+    filename = re.sub(r'-+', '-', re.sub(r'_+', '_', filename)).rstrip(' .')
+    filename = filename or 'File'
+    if filename.partition('.')[0].upper() in WINDOWS_RESERVED_NAMES:
+        filename = '_' + filename
     return filename
 
-def get_alternative_filename(path, base_name):
-    """Generate alternative filename if conflict exists."""
-    counter = 1
-    name_parts = base_name.rsplit('.', 1)
-    
-    if len(name_parts) == 2:
-        name, ext = name_parts
-        while (path.parent / f"{name}_{counter}.{ext}").exists():
-            counter += 1
-        return f"{name}_{counter}.{ext}"
-    else:
-        while (path.parent / f"{base_name}_{counter}").exists():
-            counter += 1
-        return f"{base_name}_{counter}"
 
-def get_user_confirmation(prompt):
-    """Get Y/n confirmation from user."""
-    import sys
-    
-    # Always display the prompt message first
-    print(f"{prompt} (Y/n): ", end='', flush=True)
-    
-    try:
-        response = input().strip().lower()
-        if response in ['', 'y', 'yes']:
-            return True
-        elif response in ['n', 'no']:
-            return False
-        else:
-            print("Please enter Y/y/yes or N/n/no (or press Enter for Yes)")
-            return get_user_confirmation(prompt)
-    except (EOFError, KeyboardInterrupt):
-        # In batch/drag-drop context, auto-confirm
-        print("Y")
-        return True
-
-def rename_files(path, recursive=False, dry_run=True, verbose=True, first_call=True):
-    """
-    Rename files in the specified path.
-    
-    Args:
-        path: Directory path to process
-        recursive: Process subdirectories recursively
-        dry_run: Show what would be renamed without actually renaming
-        verbose: Print detailed output
-        first_call: Whether this is the first call (for "== " prefix)
-    """
-    path = Path(path)
-    
-    if not path.exists():
-        print(f"Error: Path '{path}' does not exist.")
-        return
-    
-    files_renamed = 0
-    first_output = True
-    
-    # Get files to process
-    if path.is_file():
-        files_to_process = [path]
-    elif recursive:
-        files_to_process = [f for f in path.rglob('*') if f.is_file()]
-    else:
-        files_to_process = [f for f in path.iterdir() if f.is_file()]
-    
-    for file_path in files_to_process:
-        old_name = file_path.name
-        new_name = sanitize_filename(old_name)
-        
-        if old_name != new_name:
-            new_path = file_path.parent / new_name
-            
-            if verbose:
-                prefix = "== " if first_call and first_output else ""
-                first_output = False
-                print(f"{prefix}{'[DRY RUN] ' if dry_run else ''}Renaming: {old_name} -> {new_name}")
-            
-            if not dry_run:
-                # Check if target already exists
-                if new_path.exists():
-                    print(f"  Warning: '{new_name}' already exists.")
-                    alternative_name = get_alternative_filename(file_path, new_name)
-                    if get_user_confirmation(f"Try alternative name '{alternative_name}'?"):
-                        try:
-                            alternative_path = file_path.parent / alternative_name
-                            file_path.rename(alternative_path)
-                            files_renamed += 1
-                            print(f"  Successfully renamed to: {alternative_name}")
-                        except Exception as e:
-                            print(f"  Error with alternative name: {e}")
+def collect_files(paths, recursive=False):
+    """Expand patterns before renaming and process overlapping selections once."""
+    files = []
+    seen = set()
+    errors = 0
+    for raw_path in paths:
+        pattern = os.path.expanduser(os.fspath(raw_path))
+        path = Path(pattern)
+        matches = [path] if path.exists() else [
+            Path(match) for match in sorted(glob.glob(pattern, recursive=recursive))
+        ]
+        if not matches:
+            print(f"Error: No files or directories match '{raw_path}'.", file=sys.stderr)
+            errors += 1
+        for match in matches:
+            try:
+                if match.is_file():
+                    candidates = [match]
+                elif match.is_dir():
+                    entries = match.rglob('*') if recursive else match.iterdir()
+                    candidates = sorted(f for f in entries if f.is_file())
+                else:
+                    print(f"Error: '{match}' is not a file or directory.", file=sys.stderr)
+                    errors += 1
                     continue
-                
-                try:
-                    file_path.rename(new_path)
-                    files_renamed += 1
-                except Exception as e:
-                    print(f"  Error renaming '{old_name}': {e}")
-                    
-                    # If it's a file exists error, offer alternative naming
-                    if "exists" in str(e).lower() or "cannot create" in str(e).lower():
-                        alternative_name = get_alternative_filename(file_path, new_name)
-                        if get_user_confirmation(f"Try alternative name '{alternative_name}'?"):
-                            try:
-                                alternative_path = file_path.parent / alternative_name
-                                file_path.rename(alternative_path)
-                                files_renamed += 1
-                                print(f"  Successfully renamed to: {alternative_name}")
-                            except Exception as e2:
-                                print(f"  Error with alternative name: {e2}")
-            else:
-                # In dry-run mode, count the file unless target exists
-                if not new_path.exists():
-                    files_renamed += 1
-                elif verbose:
-                    print(f"  Warning: '{new_name}' already exists. Would skip.")
-                    # Suggest alternative filename in dry-run mode
-                    alternative_name = get_alternative_filename(file_path, new_name)
-                    print(f"  Alternative name would be: '{alternative_name}'")
-                    # Count this as a file that could be renamed (with alternative name)
-                    files_renamed += 1
-    
+                for candidate in candidates:
+                    key = os.path.normcase(os.path.abspath(candidate))
+                    if key not in seen:
+                        seen.add(key)
+                        files.append(candidate)
+            except OSError as error:
+                print(f"Error reading '{match}': {error}", file=sys.stderr)
+                errors += 1
+    return files, errors
+
+
+def _same_directory_entry(source, target):
+    """Allow case-only changes on case-insensitive disks, but never merge hardlinks."""
+    if source.name.casefold() != target.name.casefold():
+        return False
+    try:
+        return source.samefile(target) and target.name not in os.listdir(source.parent)
+    except OSError:
+        return False
+
+
+def get_user_confirmation():
+    """Only Enter, y, or Y confirms; all other input (including EOF) cancels."""
+    try:
+        return input('Proceed with renaming these files? (Y/n): ') in ('', 'y', 'Y')
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+
+
+def rename_paths(paths, recursive=False, dry_run=True, verbose=True, camelcase=False,
+                 confirm=False):
+    files, errors = collect_files(paths, recursive)
+    renames = []
+    planned = set()
+    for source in files:
+        new_name = sanitize_filename(source.name, camelcase=camelcase)
+        if new_name == source.name:
+            continue
+        target = source.with_name(new_name)
+        key = os.path.normcase(os.path.abspath(target))
+        # Windows and macOS often use case-insensitive filesystems.
+        occupied = os.path.lexists(target) and not _same_directory_entry(source, target)
+        if key in planned or occupied:
+            print(f"Error: Skipping '{source}': target '{target}' already exists "
+                  "or is selected by another rename.", file=sys.stderr)
+            errors += 1
+            continue
+        planned.add(key)
+        renames.append((source, target))
+        if dry_run and verbose:
+            print(f"{'Proposed' if confirm else '[DRY RUN] Renaming'}: {source} -> {target}")
+
+    if dry_run:
+        if verbose:
+            print(f"{'Preview' if confirm else 'Dry run'} complete. "
+                  f"{len(renames)} files would be renamed.")
+        if not confirm or not renames:
+            return 1 if errors else 0
+        if not get_user_confirmation():
+            if verbose:
+                print('Cancelled. No files renamed.')
+            return 1 if errors else 0
+
+    # Apply the exact proposals that were shown, without expanding globs again.
+    renamed = 0
+    for source, target in renames:
+        if os.path.lexists(target) and not _same_directory_entry(source, target):
+            print(f"Error: Skipping '{source}': target '{target}' already exists.",
+                  file=sys.stderr)
+            errors += 1
+            continue
+        if verbose:
+            print(f'Renaming: {source} -> {target}')
+        try:
+            source.rename(target)
+            renamed += 1
+        except OSError as error:
+            print(f"Error renaming '{source}': {error}", file=sys.stderr)
+            errors += 1
     if verbose:
-        if dry_run:
-            print(f"Dry run complete. {files_renamed} files would be renamed.")
-            if files_renamed > 0:
-                if get_user_confirmation("Proceed with renaming these files?"):
-                    # Recursively call with wet run
-                    rename_files(path, recursive, dry_run=False, verbose=verbose, first_call=False)
-        else:
-            print(f"Complete. {files_renamed} files renamed.")
+        print(f'Complete. {renamed} files renamed.')
+    return 1 if errors else 0
 
-def main():
+
+def rename_files(path, recursive=False, dry_run=True, verbose=True, camelcase=False,
+                 confirm=False):
+    """Rename files selected by one file, directory or wildcard pattern."""
+    return rename_paths([path], recursive, dry_run, verbose, camelcase, confirm)
+
+
+def main(argv=None):
     parser = argparse.ArgumentParser(
-        description='Rename files by replacing problematic characters.',
+        description='Propose Windows-friendly filenames, then ask before renaming.',
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Character replacements:
-  : -> _
-  , -> -
-  space -> -
-  ; -> _
-  ? -> _
-  < -> _
-  > -> _
-  | -> _
-  " -> _
-  * -> _
-  / -> _
-  \\ -> _
+        epilog='''Confirmation:
+  By default, preview all proposed names, then ask once: proceed? (Y/n).
+  Press Enter, y, or Y to apply those renames. Any other input cancels and exits.
+  Closed input (EOF) or Ctrl+C at the prompt also cancels.
+  Use -w to apply immediately, or -n/--dry-run to preview without prompting.
+  Quiet mode does not prompt; combine -q with -w to apply changes.
 
-Examples:
-  %(prog)s .                    # Dry-run: show what would be renamed
-  %(prog)s -w .                 # Actually rename files in current directory
-  %(prog)s /path/to/dir         # Dry-run in specific directory
-  %(prog)s -w -r /path/to/dir   # Recursively rename files (wet run)
-  %(prog)s -r /path/to/dir      # Recursive dry-run
-        """
-    )
-    
-    parser.add_argument('path', nargs='?', default='.',
-                        help='Path to directory or file (default: current directory)')
+Naming modes:
+  Default: spaces/commas become hyphens; other problematic characters become
+  underscores. Repeated hyphens or underscores are collapsed.
+  --camelcase: "my file: name.txt" becomes "MyFileName.txt". Spaces and
+  punctuation (including hyphens/underscores) separate words and are removed.
+  Existing capitals and Unicode letters are kept. Extensions (e.g. .tar.gz)
+  keep their case; punctuation/spaces within extensions are removed.
+  Windows device names (CON, NUL, etc.) are made safe in both modes.
+
+Paths and wildcards:
+  Accepts multiple files, directories, and patterns (*, ?, [abc]).
+  Quote patterns for consistent WSL/Linux and CMD behavior: "*.txt".
+  Shell-expanded patterns also work. Use -r with "**/*.txt" to match recursively.
+  Directory paths process files only; -r includes subdirectories.
+  Existing literal paths take priority over wildcard expansion.
+  Use -- before filenames that start with a hyphen.
+  No matches, rename errors, and conflicts return exit status 1; invalid usage
+  returns 2. Conflicts are skipped without overwriting. Dry runs never write.
+
+Examples (WSL/Linux and Windows CMD):
+  %(prog)s --help
+  %(prog)s --version                       Print the recorded local build time
+  %(prog)s "*.txt"                         Propose names and ask to proceed
+  %(prog)s --camelcase "*.txt"              Propose CamelCase names and confirm
+  %(prog)s -n --camelcase "*.txt"           Preview only, without prompting
+  %(prog)s -w --camelcase "*.txt" "*.pdf"   Apply changes to two patterns
+  %(prog)s -w -r "path to directory"        Rename files recursively
+  %(prog)s -r --camelcase "**/*.txt"        Propose recursive matches and confirm
+  %(prog)s -w -- "-my file.txt"             Rename a leading-hyphen file
+''')
+    parser.add_argument('--version', action='version', version=BUILD_TIME,
+                        help='Print local build time (yyyy-mm-dd_hh-mm-ss, 24-hour) and exit')
+    parser.add_argument('paths', nargs='*', default=['.'], metavar='PATH',
+                        help='Files, directories, or wildcard patterns (default: current directory)')
     parser.add_argument('-r', '--recursive', action='store_true',
-                        help='Process subdirectories recursively')
-    parser.add_argument('-w', '--wet', action='store_true',
-                        help='Actually rename files (default is dry-run)')
+                        help='Include subdirectories; enable recursive ** patterns')
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('-w', '--wet', action='store_true',
+                      help='Apply renames immediately without confirmation')
+    mode.add_argument('-n', '--dry-run', action='store_true',
+                      help='Preview only, without prompting or renaming')
     parser.add_argument('-q', '--quiet', action='store_true',
-                        help='Suppress output except errors')
-    
-    args = parser.parse_args()
-    
-    rename_files(
-        path=args.path,
-        recursive=args.recursive,
-        dry_run=not args.wet,
-        verbose=not args.quiet
-    )
+                        help='Suppress output and prompts except errors; requires -w to rename')
+    parser.add_argument('--camelcase', action='store_true',
+                        help='Join words in CamelCase without spaces, hyphens, or underscores')
+    args = parser.parse_args(argv)
+    return rename_paths(args.paths, recursive=args.recursive, dry_run=not args.wet,
+                        verbose=not args.quiet, camelcase=args.camelcase,
+                        confirm=not (args.wet or args.dry_run or args.quiet))
+
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())
