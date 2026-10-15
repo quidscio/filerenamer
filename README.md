@@ -139,12 +139,21 @@ proposals shown before confirmation are applied; new wildcard matches that
 appear while waiting are not included.
 
 Files are renamed in place and their contents are unchanged. Existing
-destinations and conflicting proposed names are skipped with an error; the app
-does not prompt for numbered alternative names. Destinations are checked again
-after confirmation. Errors do not stop processing other selected files.
+destinations and conflicting proposed names are resolved by trying numbered
+alternatives until an available name is found: `name_1.txt`, `name_2.txt`, etc.
+For example, if `podboss_events-(1).log` already exists, `podboss_events (1).log`
+becomes `podboss_events-(1)_1.log`. CamelCase uses `Name1.txt`, `Name2.txt`, etc.,
+so the names remain valid in that mode. Hidden-file prefixes and extension
+chains are preserved (e.g. `.my-file_1.tar.gz`). The preview shows the selected
+alternatives, and the usual single confirmation applies them. `-w` selects and
+applies alternatives without prompting, including in quiet mode.
+
+Destinations are checked again after confirmation. If a selected name has
+become occupied since the preview, that rename is skipped with an error.
+Errors do not stop processing other selected files.
 
 Exit status is `0` for success (including previews and cancellation), `1` for missing paths,
-unmatched patterns, conflicts, or file operation errors, and `2` for invalid
+unmatched patterns, conflicts after preview, or file operation errors, and `2` for invalid
 command-line usage. Filesystem permissions and filesystem path-length limits
 still apply.
 

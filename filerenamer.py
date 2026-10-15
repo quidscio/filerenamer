@@ -123,14 +123,19 @@ def rename_paths(paths, recursive=False, dry_run=True, verbose=True, camelcase=F
         if new_name == source.name:
             continue
         target = source.with_name(new_name)
-        key = os.path.normcase(os.path.abspath(target))
-        # Windows and macOS often use case-insensitive filesystems.
-        occupied = os.path.lexists(target) and not _same_directory_entry(source, target)
-        if key in planned or occupied:
-            print(f"Error: Skipping '{source}': target '{target}' already exists "
-                  "or is selected by another rename.", file=sys.stderr)
-            errors += 1
-            continue
+        # Keep extension chains and hidden-file prefixes when numbering conflicts.
+        extension = ''.join(target.suffixes)
+        stem = new_name[:-len(extension)] if extension else new_name
+        separator = '' if camelcase else '_'
+        counter = 0
+        while True:
+            key = os.path.normcase(os.path.abspath(target))
+            # Windows and macOS often use case-insensitive filesystems.
+            occupied = os.path.lexists(target) and not _same_directory_entry(source, target)
+            if key not in planned and not occupied:
+                break
+            counter += 1
+            target = source.with_name(f'{stem}{separator}{counter}{extension}')
         planned.add(key)
         renames.append((source, target))
         if dry_run and verbose:
@@ -201,8 +206,10 @@ Paths and wildcards:
   Directory paths process files only; -r includes subdirectories.
   Existing literal paths take priority over wildcard expansion.
   Use -- before filenames that start with a hyphen.
-  No matches, rename errors, and conflicts return exit status 1; invalid usage
-  returns 2. Conflicts are skipped without overwriting. Dry runs never write.
+  Conflicts use numbered alternatives: name_1.txt, name_2.txt, etc. CamelCase
+  uses Name1.txt, Name2.txt, etc. The preview shows the available names.
+  No matches, rename errors, and targets occupied after preview return
+  exit status 1; invalid usage returns 2. Dry runs never write.
 
 Examples (WSL/Linux and Windows CMD):
   %(prog)s --help

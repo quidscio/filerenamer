@@ -59,13 +59,14 @@ python filerenamer.py --version  # Local build time: yyyy-mm-dd_hh-mm-ss (24-hou
 - Use `-w` to rename immediately or `-n`/`--dry-run` for a noninteractive preview
 - Handles both ASCII and Unicode problematic characters
 - Recursive directory processing with `-r` flag
-- Duplicate filename detection and skipping (errors return status 1)
+- Duplicate filenames use numbered alternatives, checking existing and planned names
 - Cross-platform compatibility (Windows/WSL/Linux)
 - Multiple files/directories and Python-expanded wildcard patterns
 - CamelCase mode preserves Unicode letters, existing capitals, and extensions
-- Explicit dry-run never prompts or writes; conflicts never prompt for alternative names
+- Explicit dry-run never prompts or writes; previews include numbered alternatives for conflicts
 - Quiet mode never prompts and requires `-w` to write
 - EOF and Ctrl+C at confirmation cancel; confirmed runs use the exact previewed proposals
+- Targets occupied after preview are skipped with an error (status 1)
 
 ### Character Replacement Strategy
 

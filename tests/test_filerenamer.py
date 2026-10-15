@@ -317,27 +317,93 @@ class CliTests(FilesystemTestCase):
         self.assert_file('my-file.txt')
 
     def test_existing_target_is_never_overwritten(self):
-        for camelcase, target in ((False, 'my-file.txt'), (True, 'MyFile.txt')):
+        for camelcase, target, alternative in (
+                (False, 'my-file.txt', 'my-file_1.txt'),
+                (True, 'MyFile.txt', 'MyFile1.txt')):
             with self.subTest(camelcase=camelcase):
                 self.create('my file.txt', 'source')
                 self.create(target, 'destination')
                 flags = ['--camelcase'] if camelcase else []
-                result = self.run_cli('-w', *flags, 'my file.txt', expected=1)
-                self.assertIn('already exists', result.stderr)
-                self.assert_file('my file.txt', 'source')
+                result = self.run_cli('-w', *flags, 'my file.txt')
+                self.assertEqual(result.stderr, '')
+                self.assertFalse((self.directory / 'my file.txt').exists())
+                self.assert_file(alternative, 'source')
                 self.assert_file(target, 'destination')
                 (self.directory / target).unlink()
 
-    def test_two_sources_for_one_target_conflict_in_preview_and_wet_run(self):
+    def test_two_sources_for_one_target_get_distinct_names_in_preview_and_wet_run(self):
         self.create('my file.txt', 'first')
         self.create('my_file.txt', 'second')
-        preview = self.run_cli('--camelcase', '*.txt', expected=1)
-        self.assertIn('1 files would be renamed', preview.stdout)
+        preview = self.run_cli('--camelcase', '*.txt')
+        self.assertIn('2 files would be renamed', preview.stdout)
+        self.assertIn('MyFile1.txt', preview.stdout)
+        self.assertEqual(preview.stderr, '')
         self.assert_file('my file.txt', 'first')
         self.assert_file('my_file.txt', 'second')
-        self.run_cli('-w', '--camelcase', '*.txt', expected=1)
+        self.run_cli('-w', '--camelcase', '*.txt')
         self.assert_file('MyFile.txt', 'first')
-        self.assert_file('my_file.txt', 'second')
+        self.assert_file('MyFile1.txt', 'second')
+
+    def test_log_conflicts_preview_cancel_and_confirm_numbered_alternatives(self):
+        for number in (1, 2):
+            self.create(f'podboss_events ({number}).log', f'source {number}')
+            self.create(f'podboss_events-({number}).log', f'existing {number}')
+        self.create('podboss_events-(1)_1.log', 'first alternative')
+        self.create('podboss_events-(1)_2.log', 'second alternative')
+        alternatives = {1: 'podboss_events-(1)_3.log', 2: 'podboss_events-(2)_1.log'}
+
+        for flags in (['--dry-run'], []):
+            with self.subTest(flags=flags):
+                result = self.run_cli(*flags, response='n\n')
+                self.assertIn('2 files would be renamed', result.stdout)
+                self.assertEqual(result.stderr, '')
+                for number, target in alternatives.items():
+                    self.assertIn(f'podboss_events ({number}).log -> {target}', result.stdout)
+                    self.assert_file(f'podboss_events ({number}).log', f'source {number}')
+                    self.assertFalse((self.directory / target).exists())
+
+        result = self.run_cli(response='\n')
+        self.assertEqual(result.stdout.count('(Y/n)'), 1)
+        self.assertIn('2 files renamed', result.stdout)
+        self.assertEqual(result.stderr, '')
+        for number, target in alternatives.items():
+            self.assert_file(target, f'source {number}')
+            self.assert_file(f'podboss_events-({number}).log', f'existing {number}')
+            self.assertFalse((self.directory / f'podboss_events ({number}).log').exists())
+        self.assert_file('podboss_events-(1)_1.log', 'first alternative')
+        self.assert_file('podboss_events-(1)_2.log', 'second alternative')
+
+    def test_numbered_alternatives_avoid_existing_and_planned_targets(self):
+        self.create('my file.txt', 'first')
+        self.create('my,file.txt', 'second')
+        self.create('my file_2.txt', 'third')
+        self.create('my-file.txt', 'destination')
+        self.create('my-file_1.txt', 'existing alternative')
+        result = self.run_cli('-q', '-w', 'my file.txt', 'my,file.txt', 'my file_2.txt')
+        self.assertEqual(result.stdout + result.stderr, '')
+        self.assert_file('my-file_2.txt', 'first')
+        self.assert_file('my-file_3.txt', 'second')
+        self.assert_file('my-file_2_1.txt', 'third')
+        self.assert_file('my-file.txt', 'destination')
+        self.assert_file('my-file_1.txt', 'existing alternative')
+
+    def test_numbered_alternatives_preserve_extensions_and_stay_sanitized(self):
+        for camelcase in (False, True):
+            for prefix in ('', '.'):
+                for extension in ('', '.TXT', '.tar.gz'):
+                    with self.subTest(camelcase=camelcase, prefix=prefix, extension=extension):
+                        source = prefix + 'my file' + extension
+                        stem = 'MyFile' if camelcase else 'my-file'
+                        target = prefix + stem + extension
+                        alternative = prefix + stem + ('1' if camelcase else '_1') + extension
+                        self.create(source, 'source')
+                        self.create(target, 'destination')
+                        flags = ['--camelcase'] if camelcase else []
+                        self.run_cli('-w', *flags, source)
+                        self.assert_file(alternative, 'source')
+                        self.assert_file(target, 'destination')
+                        rerun = self.run_cli('-w', *flags, alternative)
+                        self.assertIn('0 files renamed', rerun.stdout)
 
     def test_case_only_rename(self):
         self.create('myFile.txt')
@@ -384,9 +450,11 @@ class CliTests(FilesystemTestCase):
     def test_existing_directory_target_is_not_overwritten(self):
         self.create('my file.txt')
         (self.directory / 'MyFile.txt').mkdir()
-        self.run_cli('-w', '--camelcase', 'my file.txt', expected=1)
-        self.assert_file('my file.txt')
+        (self.directory / 'MyFile1.txt').mkdir()
+        self.run_cli('-w', '--camelcase', 'my file.txt')
+        self.assert_file('MyFile2.txt')
         self.assertTrue((self.directory / 'MyFile.txt').is_dir())
+        self.assertTrue((self.directory / 'MyFile1.txt').is_dir())
 
     def test_distinct_case_variant_target_is_not_overwritten(self):
         self.create('myFile.txt', 'source')
@@ -394,8 +462,9 @@ class CliTests(FilesystemTestCase):
         if target.exists():
             self.skipTest('Filesystem is case-insensitive; covered by case-only rename test')
         self.create('MyFile.txt', 'destination')
-        self.run_cli('-w', '--camelcase', 'myFile.txt', expected=1)
-        self.assert_file('myFile.txt', 'source')
+        self.run_cli('-w', '--camelcase', 'myFile.txt')
+        self.assertFalse((self.directory / 'myFile.txt').exists())
+        self.assert_file('MyFile1.txt', 'source')
         self.assert_file('MyFile.txt', 'destination')
 
     def test_existing_hardlink_target_is_not_overwritten(self):
@@ -407,9 +476,11 @@ class CliTests(FilesystemTestCase):
             os.link(source, target)
         except OSError as error:
             self.skipTest(f'Hardlinks unavailable: {error}')
-        self.run_cli('-w', '--camelcase', 'myFile.txt', expected=1)
-        self.assert_file('myFile.txt')
+        self.run_cli('-w', '--camelcase', 'myFile.txt')
+        self.assertFalse(source.exists())
+        self.assert_file('MyFile1.txt')
         self.assert_file('MyFile.txt')
+        self.assertTrue(target.samefile(self.directory / 'MyFile1.txt'))
 
     @unittest.skipIf(os.name == 'nt', 'Windows disallows these source filename characters')
     def test_windows_invalid_characters_in_real_posix_files(self):
@@ -421,9 +492,11 @@ class CliTests(FilesystemTestCase):
     def test_broken_symlink_target_is_not_overwritten(self):
         self.create('my file.txt')
         (self.directory / 'MyFile.txt').symlink_to('missing')
-        self.run_cli('-w', '--camelcase', 'my file.txt', expected=1)
-        self.assert_file('my file.txt')
+        (self.directory / 'MyFile1.txt').symlink_to('another missing file')
+        self.run_cli('-w', '--camelcase', 'my file.txt')
+        self.assert_file('MyFile2.txt')
         self.assertTrue((self.directory / 'MyFile.txt').is_symlink())
+        self.assertTrue((self.directory / 'MyFile1.txt').is_symlink())
 
 
 class ErrorHandlingTests(FilesystemTestCase):
