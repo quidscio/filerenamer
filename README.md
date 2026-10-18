@@ -1,6 +1,6 @@
 # File Renamer
 
-Rename files with Windows-friendly names from Windows CMD, WSL, Linux, or macOS.
+Rename files or create CamelCase copies from Windows CMD, WSL, Linux, or macOS.
 Requires **Python 3.9 or newer**. The app and tests use only the Python standard
 library. There is no platform-specific compilation or runtime dependency.
 
@@ -47,7 +47,7 @@ Python 3.9+. It preserves errors and exit status and does not pause.
 ## Usage
 
 ```text
-filerenamer [-h] [--version] [-r] [-w | -n] [-q] [--camelcase] [PATH ...]
+filerenamer [-h] [--version] [-r] [-w | -n] [-q] [--camelcase] [--camelcase-copy] [PATH ...]
 ```
 
 | Option | Behavior |
@@ -56,10 +56,11 @@ filerenamer [-h] [--version] [-r] [-w | -n] [-q] [--camelcase] [PATH ...]
 | `-h`, `--help` | Show options, naming rules, and examples |
 | `--version` | Print the recorded local build time as `yyyy-mm-dd_hh-mm-ss` and exit |
 | `--camelcase` | Join filename words in CamelCase, removing spaces and punctuation |
-| `-w`, `--wet` | Apply renames immediately, without asking for confirmation |
-| `-n`, `--dry-run` | Preview only; do not prompt or rename |
+| `--camelcase-copy` | Create CamelCase copies beside the originals, preserving initial letter case and extensions |
+| `-w`, `--wet` | Apply renames or copies immediately, without asking for confirmation |
+| `-n`, `--dry-run` | Preview only; do not prompt or change files |
 | `-r`, `--recursive` | Include subdirectories and enable recursive `**` patterns |
-| `-q`, `--quiet` | Show errors only, without prompting; combine with `-w` to rename |
+| `-q`, `--quiet` | Show errors only, without prompting; combine with `-w` to rename or copy |
 
 By default, the program proposes names and asks whether to proceed:
 
@@ -82,6 +83,9 @@ filerenamer
 filerenamer --version
 filerenamer "*.txt"
 filerenamer --camelcase "*.txt"
+filerenamer --camelcase-copy "*.txt"
+filerenamer -n --camelcase-copy "*.txt"
+filerenamer -w --camelcase-copy "My File.txt" "another file.pdf"
 filerenamer --dry-run --camelcase "*.txt"
 filerenamer -w --camelcase "*.txt" "*.pdf"
 filerenamer -w --camelcase "My File.txt" "Another File.pdf"
@@ -130,16 +134,46 @@ characters are removed in CamelCase mode or replaced in default mode. Windows
 device names such as `CON.txt` become `CONFile.txt` in CamelCase mode and
 `_CON.txt` in default mode.
 
+## CamelCase copies
+
+Use `--camelcase-copy` to create copies beside the selected files, leaving the
+original names and contents unchanged. Spaces and punctuation in the stem
+separate words, and later words are capitalized. The initial letter keeps its
+original case. Extensions remain exactly unchanged, including case, punctuation,
+and extension chains such as `.tar.gz`. Leading dots are preserved for hidden
+files. The existing `--camelcase` option still capitalizes the first word when
+renaming.
+
+| Original | Copy |
+| --- | --- |
+| `my example-file.txt` | `myExampleFile.txt` |
+| `My example-file.TXT` | `MyExampleFile.TXT` |
+| `HTTP server.tar.gz` | `HTTPServer.tar.gz` |
+| `.my config.json` | `.myConfig.json` |
+| `myFile.txt` | `myFile1.txt` |
+
+Existing destinations and already-CamelCase names get numbered copies, such as
+`myFile1.txt`, `myFile2.txt`, etc. The number goes before the extension chain.
+Existing files are never overwritten. Each selected file gets one copy per
+invocation, even when selections overlap; files created during the run are not
+added to that selection. Repeating the command creates additional numbered copies.
+
+The default flow previews copies and asks once before creating them. Use `-w`
+to copy immediately, `-n`/`--dry-run` to preview only, and `-r` to include
+subdirectories. Quiet mode requires `-w` to copy. Supplying `--camelcase` alongside
+`--camelcase-copy` also uses copy mode.
+
 ## Preview, conflicts, and errors
 
 The default flow previews names and asks for confirmation; `-w` applies changes
 immediately. Use `-n`/`--dry-run` to preview without prompting or changing files.
-Quiet mode does not prompt or rename unless `-w` is also supplied. Only the
+Quiet mode does not prompt or change files unless `-w` is also supplied. Only the
 proposals shown before confirmation are applied; new wildcard matches that
 appear while waiting are not included.
 
-Files are renamed in place and their contents are unchanged. Existing
-destinations and conflicting proposed names are resolved by trying numbered
+Renames operate in place and leave contents unchanged; `--camelcase-copy` creates
+independent copies and preserves file permissions and timestamps where supported.
+Existing destinations and conflicting proposed names are resolved by trying numbered
 alternatives until an available name is found: `name_1.txt`, `name_2.txt`, etc.
 For example, if `podboss_events-(1).log` already exists, `podboss_events (1).log`
 becomes `podboss_events-(1)_1.log`. CamelCase uses `Name1.txt`, `Name2.txt`, etc.,
@@ -149,7 +183,7 @@ alternatives, and the usual single confirmation applies them. `-w` selects and
 applies alternatives without prompting, including in quiet mode.
 
 Destinations are checked again after confirmation. If a selected name has
-become occupied since the preview, that rename is skipped with an error.
+become occupied since the preview, that rename or copy is skipped with an error.
 Errors do not stop processing other selected files.
 
 Exit status is `0` for success (including previews and cancellation), `1` for missing paths,
@@ -230,7 +264,10 @@ recursive selection, literal bracket filenames, unmatched patterns, CamelCase
 and Unicode, Windows-invalid characters and device names, extension handling,
 confirmation (Enter/y/Y), cancellation, closed input, explicit dry runs,
 conflicts before and after confirmation, help, quiet output, error exit codes,
-and relocated launchers. Build-version tests check local host time, zero-padded
+and relocated launchers. Copy tests cover initial letter case, exact extensions,
+original preservation, independent binary contents, metadata, numbered copies,
+recursive selections, failed-copy cleanup, and destinations created during a run.
+Build-version tests check local host time, zero-padded
 24-hour formatting, replacement on rebuild, stable output across runtime
 timezone/file-time changes, and version output without file changes. The
 installed-wheel checks verify both the console and module entry points.

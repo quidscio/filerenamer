@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Propose portable filenames and confirm before renaming, unless --wet is supplied."""
+"""Propose portable filenames and confirm before renaming or copying files."""
 
 import argparse
 import glob
 import os
 from pathlib import Path
 import re
+import shutil
 import sys
 import unicodedata
 
@@ -26,21 +27,27 @@ def _is_word_character(character):
     return unicodedata.category(character)[0] in 'LNM'
 
 
-def _camelcase(filename):
-    filename = filename.rstrip(' .')
+def _camelcase(filename, preserve_extension=False, preserve_initial=False):
+    if not preserve_extension:
+        filename = filename.rstrip(' .')
     hidden = filename.startswith('.')
     filename = filename.lstrip('.')
     # Keep extension chains such as .tar.gz, including their original case.
-    stem, _, extension = filename.partition('.')
+    stem, dot, extension = filename.partition('.')
     words = ''.join(c if _is_word_character(c) else ' ' for c in stem).split()
-    stem = ''.join(word[:1].upper() + word[1:] for word in words) or 'File'
-    extension = '.'.join(
-        cleaned for part in extension.split('.')
-        if (cleaned := ''.join(c for c in part if _is_word_character(c)))
-    )
+    stem = ''.join(
+        word if preserve_initial and index == 0 else word[:1].upper() + word[1:]
+        for index, word in enumerate(words)
+    ) or 'File'
+    if not preserve_extension:
+        extension = '.'.join(
+            cleaned for part in extension.split('.')
+            if (cleaned := ''.join(c for c in part if _is_word_character(c)))
+        )
+        dot = '.' if extension else ''
     if stem.upper() in WINDOWS_RESERVED_NAMES:
         stem += 'File'
-    return ('.' if hidden else '') + stem + ('.' + extension if extension else '')
+    return ('.' if hidden else '') + stem + dot + extension
 
 
 def sanitize_filename(filename, camelcase=False):
@@ -104,88 +111,116 @@ def _same_directory_entry(source, target):
         return False
 
 
-def get_user_confirmation():
+def get_user_confirmation(action='renaming'):
     """Only Enter, y, or Y confirms; all other input (including EOF) cancels."""
     try:
-        return input('Proceed with renaming these files? (Y/n): ') in ('', 'y', 'Y')
+        return input(f'Proceed with {action} these files? (Y/n): ') in ('', 'y', 'Y')
     except (EOFError, KeyboardInterrupt):
         print()
         return False
 
 
+def _copy_file(source, target):
+    """Copy contents and metadata, exclusively creating the destination."""
+    with source.open('rb') as original:
+        duplicate = target.open('xb')
+        try:
+            with duplicate:
+                shutil.copyfileobj(original, duplicate)
+            shutil.copystat(source, target)
+        except OSError:
+            target.unlink()
+            raise
+
+
 def rename_paths(paths, recursive=False, dry_run=True, verbose=True, camelcase=False,
-                 confirm=False):
+                 confirm=False, camelcase_copy=False):
+    camelcase = camelcase or camelcase_copy
+    action = 'copying' if camelcase_copy else 'renaming'
+    completed_action = 'copied' if camelcase_copy else 'renamed'
     files, errors = collect_files(paths, recursive)
-    renames = []
+    proposals = []
     planned = set()
     for source in files:
-        new_name = sanitize_filename(source.name, camelcase=camelcase)
-        if new_name == source.name:
+        new_name = (_camelcase(source.name, preserve_extension=True, preserve_initial=True)
+                    if camelcase_copy
+                    else sanitize_filename(source.name, camelcase=camelcase))
+        if new_name == source.name and not camelcase_copy:
             continue
         target = source.with_name(new_name)
         # Keep extension chains and hidden-file prefixes when numbering conflicts.
-        extension = ''.join(target.suffixes)
+        extension = (''.join(source.name.lstrip('.').partition('.')[1:]) if camelcase_copy
+                     else ''.join(target.suffixes))
         stem = new_name[:-len(extension)] if extension else new_name
         separator = '' if camelcase else '_'
         counter = 0
         while True:
             key = os.path.normcase(os.path.abspath(target))
             # Windows and macOS often use case-insensitive filesystems.
-            occupied = os.path.lexists(target) and not _same_directory_entry(source, target)
+            occupied = os.path.lexists(target) and (
+                camelcase_copy or not _same_directory_entry(source, target))
             if key not in planned and not occupied:
                 break
             counter += 1
             target = source.with_name(f'{stem}{separator}{counter}{extension}')
         planned.add(key)
-        renames.append((source, target))
+        proposals.append((source, target))
         if dry_run and verbose:
-            print(f"{'Proposed' if confirm else '[DRY RUN] Renaming'}: {source} -> {target}")
+            label = 'Proposed copy' if camelcase_copy else 'Proposed'
+            if not confirm:
+                label = f'[DRY RUN] {action.capitalize()}'
+            print(f'{label}: {source} -> {target}')
 
     if dry_run:
         if verbose:
             print(f"{'Preview' if confirm else 'Dry run'} complete. "
-                  f"{len(renames)} files would be renamed.")
-        if not confirm or not renames:
+                  f"{len(proposals)} files would be {completed_action}.")
+        if not confirm or not proposals:
             return 1 if errors else 0
-        if not get_user_confirmation():
+        if not get_user_confirmation(action):
             if verbose:
-                print('Cancelled. No files renamed.')
+                print(f'Cancelled. No files {completed_action}.')
             return 1 if errors else 0
 
     # Apply the exact proposals that were shown, without expanding globs again.
-    renamed = 0
-    for source, target in renames:
-        if os.path.lexists(target) and not _same_directory_entry(source, target):
+    completed = 0
+    for source, target in proposals:
+        if os.path.lexists(target) and (
+                camelcase_copy or not _same_directory_entry(source, target)):
             print(f"Error: Skipping '{source}': target '{target}' already exists.",
                   file=sys.stderr)
             errors += 1
             continue
         if verbose:
-            print(f'Renaming: {source} -> {target}')
+            print(f'{action.capitalize()}: {source} -> {target}')
         try:
-            source.rename(target)
-            renamed += 1
+            if camelcase_copy:
+                _copy_file(source, target)
+            else:
+                source.rename(target)
+            completed += 1
         except OSError as error:
-            print(f"Error renaming '{source}': {error}", file=sys.stderr)
+            print(f"Error {action} '{source}': {error}", file=sys.stderr)
             errors += 1
     if verbose:
-        print(f'Complete. {renamed} files renamed.')
+        print(f'Complete. {completed} files {completed_action}.')
     return 1 if errors else 0
 
 
 def rename_files(path, recursive=False, dry_run=True, verbose=True, camelcase=False,
-                 confirm=False):
-    """Rename files selected by one file, directory or wildcard pattern."""
-    return rename_paths([path], recursive, dry_run, verbose, camelcase, confirm)
+                 confirm=False, camelcase_copy=False):
+    """Rename or copy files selected by one file, directory or wildcard pattern."""
+    return rename_paths([path], recursive, dry_run, verbose, camelcase, confirm,
+                        camelcase_copy)
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description='Propose Windows-friendly filenames, then ask before renaming.',
+        description='Propose Windows-friendly filenames, then ask before renaming or copying.',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''Confirmation:
   By default, preview all proposed names, then ask once: proceed? (Y/n).
-  Press Enter, y, or Y to apply those renames. Any other input cancels and exits.
+  Press Enter, y, or Y to apply those changes. Any other input cancels and exits.
   Closed input (EOF) or Ctrl+C at the prompt also cancels.
   Use -w to apply immediately, or -n/--dry-run to preview without prompting.
   Quiet mode does not prompt; combine -q with -w to apply changes.
@@ -198,6 +233,12 @@ Naming modes:
   Existing capitals and Unicode letters are kept. Extensions (e.g. .tar.gz)
   keep their case; punctuation/spaces within extensions are removed.
   Windows device names (CON, NUL, etc.) are made safe in both modes.
+  --camelcase-copy: create CamelCase copies beside the originals, leaving the
+  original files in place. Preserve the initial letter's case and capitalize
+  later words: "my example-file.txt" becomes "myExampleFile.txt".
+  Keep extensions exactly unchanged (including extension chains).
+  Existing destinations and already-CamelCase names get numbered copies,
+  such as MyFile1.txt, MyFile2.txt, etc. Existing files are never overwritten.
 
 Paths and wildcards:
   Accepts multiple files, directories, and patterns (*, ?, [abc]).
@@ -208,7 +249,7 @@ Paths and wildcards:
   Use -- before filenames that start with a hyphen.
   Conflicts use numbered alternatives: name_1.txt, name_2.txt, etc. CamelCase
   uses Name1.txt, Name2.txt, etc. The preview shows the available names.
-  No matches, rename errors, and targets occupied after preview return
+  No matches, file operation errors, and targets occupied after preview return
   exit status 1; invalid usage returns 2. Dry runs never write.
 
 Examples (WSL/Linux and Windows CMD):
@@ -216,6 +257,8 @@ Examples (WSL/Linux and Windows CMD):
   %(prog)s --version                       Print the recorded local build time
   %(prog)s "*.txt"                         Propose names and ask to proceed
   %(prog)s --camelcase "*.txt"              Propose CamelCase names and confirm
+  %(prog)s --camelcase-copy "*.txt"         Propose CamelCase copies and confirm
+  %(prog)s -w --camelcase-copy "*.txt"      Create CamelCase copies immediately
   %(prog)s -n --camelcase "*.txt"           Preview only, without prompting
   %(prog)s -w --camelcase "*.txt" "*.pdf"   Apply changes to two patterns
   %(prog)s -w -r "path to directory"        Rename files recursively
@@ -230,17 +273,20 @@ Examples (WSL/Linux and Windows CMD):
                         help='Include subdirectories; enable recursive ** patterns')
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('-w', '--wet', action='store_true',
-                      help='Apply renames immediately without confirmation')
+                      help='Apply renames or copies immediately without confirmation')
     mode.add_argument('-n', '--dry-run', action='store_true',
-                      help='Preview only, without prompting or renaming')
+                      help='Preview only, without prompting or changing files')
     parser.add_argument('-q', '--quiet', action='store_true',
-                        help='Suppress output and prompts except errors; requires -w to rename')
+                        help='Suppress output and prompts except errors; requires -w to write')
     parser.add_argument('--camelcase', action='store_true',
                         help='Join words in CamelCase without spaces, hyphens, or underscores')
+    parser.add_argument('--camelcase-copy', action='store_true',
+                        help='Copy with CamelCase names, preserving the initial letter case and originals')
     args = parser.parse_args(argv)
     return rename_paths(args.paths, recursive=args.recursive, dry_run=not args.wet,
                         verbose=not args.quiet, camelcase=args.camelcase,
-                        confirm=not (args.wet or args.dry_run or args.quiet))
+                        confirm=not (args.wet or args.dry_run or args.quiet),
+                        camelcase_copy=args.camelcase_copy)
 
 
 if __name__ == '__main__':

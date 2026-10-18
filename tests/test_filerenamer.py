@@ -131,7 +131,7 @@ class CliTests(FilesystemTestCase):
         for flag in ('-h', '--help'):
             with self.subTest(flag=flag):
                 result = self.run_cli(flag)
-                for text in ('--camelcase', '--wet', '--dry-run', '--recursive', '--quiet', '--version', 'PATH',
+                for text in ('--camelcase', '--camelcase-copy', '--wet', '--dry-run', '--recursive', '--quiet', '--version', 'PATH',
                              '"*.txt"', '**/*.txt', 'CMD', 'preview', 'exit status', '(Y/n)',
                              'Enter, y, or Y', 'Any other input cancels'):
                     self.assertIn(text, result.stdout)
@@ -499,6 +499,222 @@ class CliTests(FilesystemTestCase):
         self.assertTrue((self.directory / 'MyFile1.txt').is_symlink())
 
 
+class CopyTests(FilesystemTestCase):
+    def test_copy_preserves_initial_case_extensions_and_originals(self):
+        examples = {
+            'my example-file.TXT': 'myExampleFile.TXT',
+            'My example-file.tar.gz': 'MyExampleFile.tar.gz',
+            'HTTP server.txt': 'HTTPServer.txt',
+            'my file.tar data.G_Z': 'myFile.tar data.G_Z',
+            '.my config.json': '.myConfig.json',
+            'café notes.txt': 'caféNotes.txt',
+            'cafe\u0301 notes.txt': 'cafe\u0301Notes.txt',
+            'my file': 'myFile',
+            '-my file.TXT': 'myFile.TXT',
+            'MyFile.txt': 'MyFile1.txt',
+            'myFile.txt': 'myFile1.txt',
+            '---.txt': 'File.txt',
+        }
+        for index, (original, expected) in enumerate(examples.items()):
+            with self.subTest(original=original):
+                source = self.create(f'{index}/{original}')
+                result = self.run_cli('-w', '--camelcase-copy', str(source))
+                self.assertIn('1 files copied', result.stdout)
+                self.assertNotIn('(Y/n)', result.stdout)
+                self.assert_file(f'{index}/{original}')
+                self.assert_file(f'{index}/{expected}')
+
+    def test_copy_is_independent_and_preserves_binary_contents_and_metadata(self):
+        source = self.create('binary file.bin')
+        contents = bytes(range(256)) * 1024
+        source.write_bytes(contents)
+        os.utime(source, (1600000000, 1600000000))
+        before = source.stat()
+        self.run_cli('-w', '--camelcase-copy', str(source))
+        target = self.directory / 'binaryFile.bin'
+        self.assertEqual(source.read_bytes(), contents)
+        self.assertEqual(target.read_bytes(), contents)
+        self.assertEqual(source.stat().st_mtime_ns, before.st_mtime_ns)
+        self.assertEqual(target.stat().st_mtime_ns, before.st_mtime_ns)
+        self.assertEqual(target.stat().st_mode, before.st_mode)
+        self.assertFalse(source.samefile(target))
+        target.write_bytes(b'changed copy')
+        self.assertEqual(source.read_bytes(), contents)
+
+    def test_confirmation_and_cancellation_describe_copying(self):
+        self.create('my file.txt')
+        for response in ('n\n', '', 'yes\n', '\n', 'y\n', 'Y\n'):
+            with self.subTest(response=response):
+                result = self.run_cli('--camelcase-copy', 'my file.txt', response=response)
+                self.assertIn('Proposed copy:', result.stdout)
+                self.assertIn('1 files would be copied', result.stdout)
+                self.assertIn('Proceed with copying these files? (Y/n):', result.stdout)
+                self.assertEqual(result.stdout.count('(Y/n)'), 1)
+                self.assert_file('my file.txt')
+                target = self.directory / 'myFile.txt'
+                if response in ('\n', 'y\n', 'Y\n'):
+                    self.assertIn('Copying:', result.stdout)
+                    self.assert_file('myFile.txt')
+                    target.unlink()
+                else:
+                    self.assertIn('Cancelled. No files copied.', result.stdout)
+                    self.assertFalse(target.exists())
+
+    def test_dry_run_and_quiet_preview_never_prompt_or_copy(self):
+        self.create('my file.txt')
+        for flag in ('-n', '--dry-run', '-q'):
+            with self.subTest(flag=flag):
+                result = self.run_cli(flag, '--camelcase-copy', '*.txt', response='\n')
+                self.assertNotIn('(Y/n)', result.stdout)
+                self.assert_file('my file.txt')
+                self.assertFalse((self.directory / 'myFile.txt').exists())
+                if flag == '-q':
+                    self.assertEqual(result.stdout + result.stderr, '')
+                else:
+                    self.assertIn('[DRY RUN] Copying:', result.stdout)
+                    self.assertIn('1 files would be copied', result.stdout)
+
+    def test_quiet_wet_copy_with_redundant_camelcase_flag(self):
+        self.create('my file.txt')
+        result = self.run_cli('-q', '-w', '--camelcase', '--camelcase-copy', 'my file.txt')
+        self.assertEqual(result.stdout + result.stderr, '')
+        self.assert_file('my file.txt')
+        self.assert_file('myFile.txt')
+
+    def test_recursive_globs_and_overlapping_paths_copy_original_selection_once(self):
+        self.create('one file.txt', 'first')
+        self.create('sub directory/two file.txt', 'second')
+        self.create('keep file.pdf')
+        result = self.run_cli('-r', '--camelcase-copy', '**/*.txt', 'one file.txt',
+                              'sub directory', response='\n')
+        self.assertEqual(result.stdout.count('Proposed copy:'), 2)
+        self.assertEqual(result.stdout.count('(Y/n)'), 1)
+        self.assertIn('2 files copied', result.stdout)
+        for name, contents in (('one file.txt', 'first'), ('oneFile.txt', 'first'),
+                               ('sub directory/two file.txt', 'second'),
+                               ('sub directory/twoFile.txt', 'second')):
+            self.assert_file(name, contents)
+        self.assert_file('keep file.pdf')
+        self.assertEqual(len(list(self.directory.rglob('*.txt'))), 4)
+
+    def test_default_directory_copies_immediate_files_including_hidden_files(self):
+        self.create('my file.txt')
+        self.create('.my config')
+        self.create('sub directory/nested file.txt')
+        self.run_cli('-w', '--camelcase-copy')
+        for name in ('my file.txt', 'myFile.txt', '.my config', '.myConfig',
+                     'sub directory/nested file.txt'):
+            self.assert_file(name)
+        self.assertFalse((self.directory / 'sub directory/nestedFile.txt').exists())
+
+    def test_numbered_copies_avoid_existing_and_planned_targets(self):
+        sources = {'my file.tar.gz': 'first', 'my-file.tar.gz': 'second',
+                   'myFile.tar.gz': 'existing', 'myFile1.tar.gz': 'numbered'}
+        for name, contents in sources.items():
+            self.create(name, contents)
+        arguments = ('--camelcase-copy', 'my file.tar.gz', 'my-file.tar.gz', 'myFile.tar.gz')
+        preview = self.run_cli('-n', *arguments)
+        for number in (2, 3, 4):
+            self.assertIn(f'myFile{number}.tar.gz', preview.stdout)
+            self.assertFalse((self.directory / f'myFile{number}.tar.gz').exists())
+        self.run_cli('-w', *arguments)
+        for name, contents in sources.items():
+            self.assert_file(name, contents)
+        for number, contents in ((2, 'first'), (3, 'second'), (4, 'existing')):
+            self.assert_file(f'myFile{number}.tar.gz', contents)
+
+    def test_existing_directory_and_hidden_extension_chain_conflicts(self):
+        self.create('.my config.tar.gz')
+        (self.directory / '.myConfig.tar.gz').mkdir()
+        self.create('.myConfig1.tar.gz', 'existing')
+        self.run_cli('-w', '--camelcase-copy', '.my config.tar.gz')
+        self.assert_file('.my config.tar.gz')
+        self.assertTrue((self.directory / '.myConfig.tar.gz').is_dir())
+        self.assert_file('.myConfig1.tar.gz', 'existing')
+        self.assert_file('.myConfig2.tar.gz')
+
+    def test_missing_input_returns_error_but_other_files_are_copied(self):
+        self.create('my file.txt')
+        result = self.run_cli('-w', '--camelcase-copy', '*.missing', 'my file.txt', expected=1)
+        self.assertIn('No files or directories match', result.stderr)
+        self.assert_file('my file.txt')
+        self.assert_file('myFile.txt')
+
+    def test_copy_failure_removes_partial_output_and_continues(self):
+        self.create('bad file.txt')
+        self.create('good file.txt')
+        copy_contents = shutil.copyfileobj
+
+        def fail_first_copy(original, duplicate):
+            if Path(original.name).name == 'bad file.txt':
+                duplicate.write(b'partial contents')
+                raise OSError('disk write failed')
+            return copy_contents(original, duplicate)
+
+        with mock.patch('filerenamer.shutil.copyfileobj', side_effect=fail_first_copy):
+            with contextlib.redirect_stderr(io.StringIO()) as errors:
+                result = filerenamer.rename_files(self.directory, dry_run=False,
+                                                 verbose=False, camelcase_copy=True)
+        self.assertEqual(result, 1)
+        self.assertIn('Error copying', errors.getvalue())
+        self.assertIn('disk write failed', errors.getvalue())
+        self.assert_file('bad file.txt')
+        self.assertFalse((self.directory / 'badFile.txt').exists())
+        self.assert_file('good file.txt')
+        self.assert_file('goodFile.txt')
+
+    def test_confirmation_uses_preview_and_does_not_overwrite_new_destinations(self):
+        self.create('my file.txt')
+        self.create('other file.txt')
+
+        def confirm(prompt):
+            self.create('myFile.txt', 'created while waiting')
+            self.create('new file.txt')
+            return 'Y'
+
+        with mock.patch('builtins.input', side_effect=confirm):
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                result = filerenamer.rename_files(self.directory / '*.txt', confirm=True,
+                                                 camelcase_copy=True)
+        self.assertEqual(result, 1)
+        self.assert_file('my file.txt')
+        self.assert_file('myFile.txt', 'created while waiting')
+        self.assert_file('other file.txt')
+        self.assert_file('otherFile.txt')
+        self.assert_file('new file.txt')
+        self.assertFalse((self.directory / 'newFile.txt').exists())
+        self.assertFalse((self.directory / 'myFile1.txt').exists())
+
+    def test_destination_created_just_before_copy_is_not_overwritten(self):
+        source = self.create('my file.txt')
+        target = self.directory / 'myFile.txt'
+        path_open = Path.open
+
+        def open_with_conflict(path, mode='r', *args, **kwargs):
+            if path == target and mode == 'xb':
+                with path_open(target, 'wb') as existing:
+                    existing.write(b'created after final check')
+            return path_open(path, mode, *args, **kwargs)
+
+        with mock.patch.object(Path, 'open', new=open_with_conflict):
+            with contextlib.redirect_stderr(io.StringIO()) as errors:
+                result = filerenamer.rename_files(source, dry_run=False, verbose=False,
+                                                 camelcase_copy=True)
+        self.assertEqual(result, 1)
+        self.assertIn('Error copying', errors.getvalue())
+        self.assert_file('my file.txt')
+        self.assert_file('myFile.txt', 'created after final check')
+
+    @unittest.skipIf(os.name == 'nt', 'Windows symlinks may require additional privileges')
+    def test_broken_symlink_destination_is_preserved(self):
+        self.create('my file.txt')
+        (self.directory / 'myFile.txt').symlink_to('missing')
+        self.run_cli('-w', '--camelcase-copy', 'my file.txt')
+        self.assert_file('my file.txt')
+        self.assert_file('myFile1.txt')
+        self.assertTrue((self.directory / 'myFile.txt').is_symlink())
+
+
 class ErrorHandlingTests(FilesystemTestCase):
     def test_interrupt_at_confirmation_cancels(self):
         source = self.create('my file.txt')
@@ -565,6 +781,19 @@ class LauncherTests(FilesystemTestCase):
         self.install.mkdir()
         for name in ('filerenamer.py', 'filerenamer', 'filerenamer.bat'):
             shutil.copy2(ROOT / name, self.install / name)
+
+    def test_native_launcher_creates_camelcase_copies(self):
+        self.create('my file.TXT')
+        if os.name == 'nt':
+            result = self.run_cmd('-w --camelcase-copy "my file.TXT"')
+        else:
+            result = subprocess.run(['sh', str(self.install / 'filerenamer'), '-w',
+                                     '--camelcase-copy', 'my file.TXT'], cwd=self.directory,
+                                    capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('1 files copied', result.stdout)
+        self.assert_file('my file.TXT')
+        self.assert_file('myFile.TXT')
 
     def test_recorded_build_time_is_independent_of_runtime_clock_and_file_mtime(self):
         script = self.install / 'filerenamer.py'

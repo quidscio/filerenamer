@@ -34,6 +34,20 @@ def main():
         assert '(Y/n)' in confirmed.stdout, confirmed.stdout
         assert Path(directory, 'MyFile.txt').read_text(encoding='utf-8') == 'keep this content'
         assert not source.exists(), 'Original file was not renamed'
+        copy_source = Path(directory, 'copy file.TXT')
+        copy_source.write_text('keep original and copy', encoding='utf-8')
+        copied = subprocess.run(['filerenamer', '-w', '--camelcase-copy', str(copy_source)],
+                                cwd=directory, check=True, capture_output=True,
+                                text=True, timeout=15)
+        assert '1 files copied' in copied.stdout, copied.stdout
+        assert copy_source.read_text(encoding='utf-8') == 'keep original and copy'
+        copy_target = Path(directory, 'copyFile.TXT')
+        assert copy_target.read_text(encoding='utf-8') == 'keep original and copy'
+        subprocess.run([sys.executable, '-m', 'filerenamer', '-w', '--camelcase-copy',
+                        str(copy_target)], cwd=directory, check=True,
+                       capture_output=True, text=True, timeout=15)
+        assert copy_target.read_text(encoding='utf-8') == 'keep original and copy'
+        assert Path(directory, 'copyFile1.TXT').read_text(encoding='utf-8') == 'keep original and copy'
     print('Installed CLI smoke test passed.')
 
 
